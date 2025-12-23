@@ -1,6 +1,6 @@
 //! 主应用状态和 UI 协调
 
-use eframe::egui::{self, CentralPanel, Context, TopBottomPanel};
+use eframe::egui::{self, CentralPanel, Context, FontData, FontDefinitions, FontFamily, TopBottomPanel};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -101,8 +101,37 @@ pub struct HexinApp {
 }
 
 impl HexinApp {
+    /// 配置字体，添加中文支持（嵌入字体）
+    fn setup_fonts(ctx: &Context) {
+        let mut fonts = FontDefinitions::default();
+
+        // 嵌入 Noto Sans SC 中文字体
+        let font_data = include_bytes!("../assets/NotoSansSC-Regular.ttf");
+        fonts.font_data.insert(
+            "noto_sans_sc".to_owned(),
+            FontData::from_static(font_data),
+        );
+
+        // 将中文字体添加到默认字体族
+        fonts
+            .families
+            .get_mut(&FontFamily::Proportional)
+            .unwrap()
+            .push("noto_sans_sc".to_owned());
+        fonts
+            .families
+            .get_mut(&FontFamily::Monospace)
+            .unwrap()
+            .push("noto_sans_sc".to_owned());
+
+        ctx.set_fonts(fonts);
+    }
+
     /// 创建新应用
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // 配置中文字体
+        Self::setup_fonts(&cc.egui_ctx);
+
         let config = AppConfig::load();
         let mut sys = System::new_all();
         sys.refresh_all();
