@@ -1,6 +1,6 @@
 //! 主应用状态和 UI 协调
 
-use eframe::egui::{self, CentralPanel, Context, FontData, FontDefinitions, FontFamily, TopBottomPanel};
+use eframe::egui::{self, CentralPanel, Color32, Context, FontData, FontDefinitions, FontFamily, Frame, Margin, RichText, Rounding, TopBottomPanel};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -94,8 +94,10 @@ pub struct HexinApp {
     process_list_panel: ProcessListPanel,
     /// 调度策略面板
     scheduler_panel: SchedulerPanel,
-    /// 上次更新时间
-    last_update: Instant,
+    /// 上次 CPU 更新时间
+    last_cpu_update: Instant,
+    /// 上次进程更新时间
+    last_process_update: Instant,
     /// 启动时间（用于历史图表的时间戳）
     start_time: Instant,
 }
@@ -141,7 +143,10 @@ impl HexinApp {
         let vcache_cores = cpu_info.vcache_cores();
 
         let cpu_history = CpuHistory::new(logical_cores, config.history_length);
-        let process_manager = ProcessManager::new(logical_cores);
+        let mut process_manager = ProcessManager::new(logical_cores);
+
+        // 初始化时加载进程列表
+        process_manager.update(&sys);
 
         Self {
             config,
@@ -153,7 +158,8 @@ impl HexinApp {
             cpu_monitor_panel: CpuMonitorPanel::new(),
             process_list_panel: ProcessListPanel::new(),
             scheduler_panel: SchedulerPanel::new(&vcache_cores, logical_cores),
-            last_update: Instant::now(),
+            last_cpu_update: Instant::now(),
+            last_process_update: Instant::now(),
             start_time: Instant::now(),
         }
     }
@@ -161,10 +167,11 @@ impl HexinApp {
     /// 更新系统数据
     fn update_data(&mut self) {
         let now = Instant::now();
-        let elapsed = now.duration_since(self.last_update);
 
-        if elapsed >= Duration::from_millis(self.config.refresh_interval_ms) {
-            self.last_update = now;
+        // CPU 更新 (每 500ms)
+        let cpu_elapsed = now.duration_since(self.last_cpu_update);
+        if cpu_elapsed >= Duration::from_millis(self.config.refresh_interval_ms) {
+            self.last_cpu_update = now;
 
             // 刷新 CPU 信息
             self.sys.refresh_cpu_all();
@@ -174,12 +181,14 @@ impl HexinApp {
             let core_usages: Vec<f32> = self.cpu_info.cores.iter().map(|c| c.usage_percent).collect();
             let timestamp = now.duration_since(self.start_time).as_secs_f64();
             self.cpu_history.push(&core_usages, self.cpu_info.total_usage_percent, timestamp);
+        }
 
-            // 刷新进程信息（不是每次都刷新，减少开销）
-            if elapsed >= Duration::from_millis(1000) {
-                self.sys.refresh_processes(ProcessesToUpdate::All, true);
-                self.process_manager.update(&self.sys);
-            }
+        // 进程更新 (每 1000ms)
+        let process_elapsed = now.duration_since(self.last_process_update);
+        if process_elapsed >= Duration::from_millis(1000) {
+            self.last_process_update = now;
+            self.sys.refresh_processes(ProcessesToUpdate::All, true);
+            self.process_manager.update(&self.sys);
         }
     }
 }
@@ -193,30 +202,64 @@ impl eframe::App for HexinApp {
         ctx.request_repaint_after(Duration::from_millis(self.config.refresh_interval_ms));
 
         // 顶部标签栏
-        TopBottomPanel::top("tabs").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("hexin");
-                ui.separator();
+        TopBottomPanel::top("tabs")
+            .frame(Frame::none()
+                .fill(Color32::from_gray(30))
+                .inner_margin(Margin::symmetric(16.0, 8.0)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    // Logo
+                    ui.label(RichText::new("hexin").size(18.0).strong().color(Color32::from_rgb(100, 180, 255)));
+                    ui.add_space(24.0);
 
-                if ui.selectable_label(self.current_tab == Tab::CpuMonitor, "CPU 监控").clicked() {
-                    self.current_tab = Tab::CpuMonitor;
-                }
-                if ui.selectable_label(self.current_tab == Tab::ProcessList, "进程管理").clicked() {
-                    self.current_tab = Tab::ProcessList;
-                }
-                if ui.selectable_label(self.current_tab == Tab::Scheduler, "调度策略").clicked() {
-                    self.current_tab = Tab::Scheduler;
-                }
+                    // 标签按钮
+                    let tabs = [
+                        (Tab::CpuMonitor, "CPU 监控"),
+                        (Tab::ProcessList, "进程管理"),
+                        (Tab::Scheduler, "调度策略"),
+                    ];
 
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!(
-                        "CPU: {:.1}% | 核心: {}",
-                        self.cpu_info.total_usage_percent,
-                        self.cpu_info.logical_cores
-                    ));
+                    for (tab, label) in tabs {
+                        let is_selected = self.current_tab == tab;
+                        let text_color = if is_selected {
+                            Color32::WHITE
+                        } else {
+                            Color32::from_gray(160)
+                        };
+
+                        Frame::none()
+                            .fill(if is_selected { Color32::from_rgb(60, 90, 120) } else { Color32::TRANSPARENT })
+                            .rounding(Rounding::same(6.0))
+                            .inner_margin(Margin::symmetric(12.0, 6.0))
+                            .show(ui, |ui| {
+                                if ui.add(egui::Label::new(
+                                    RichText::new(label).color(text_color).size(13.0)
+                                ).sense(egui::Sense::click())).clicked() {
+                                    self.current_tab = tab;
+                                }
+                            });
+
+                        ui.add_space(4.0);
+                    }
+
+                    // 右侧状态信息
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let usage_color = if self.cpu_info.total_usage_percent > 80.0 {
+                            Color32::from_rgb(255, 100, 100)
+                        } else if self.cpu_info.total_usage_percent > 50.0 {
+                            Color32::from_rgb(255, 200, 100)
+                        } else {
+                            Color32::from_rgb(100, 200, 100)
+                        };
+
+                        ui.label(RichText::new(format!("核心: {}", self.cpu_info.logical_cores))
+                            .size(12.0).color(Color32::from_gray(140)));
+                        ui.add_space(12.0);
+                        ui.label(RichText::new(format!("CPU: {:.1}%", self.cpu_info.total_usage_percent))
+                            .size(12.0).color(usage_color));
+                    });
                 });
             });
-        });
 
         // 主内容区域
         CentralPanel::default().show(ctx, |ui| {
