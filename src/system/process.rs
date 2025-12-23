@@ -222,15 +222,14 @@ pub fn set_process_affinity(pid: i32, cores: &[usize]) -> Result<(), String> {
     use std::mem::MaybeUninit;
 
     unsafe {
-        let mut cpuset = MaybeUninit::<cpu_set_t>::zeroed();
-        let cpuset_ptr = cpuset.as_mut_ptr();
-        CPU_ZERO(cpuset_ptr);
+        let mut cpuset = MaybeUninit::<cpu_set_t>::zeroed().assume_init();
+        CPU_ZERO(&mut cpuset);
 
         for &core in cores {
-            CPU_SET(core, cpuset_ptr);
+            CPU_SET(core, &mut cpuset);
         }
 
-        let result = sched_setaffinity(pid, std::mem::size_of::<cpu_set_t>(), cpuset.as_ptr());
+        let result = sched_setaffinity(pid, std::mem::size_of::<cpu_set_t>(), &cpuset);
 
         if result == 0 {
             Ok(())
